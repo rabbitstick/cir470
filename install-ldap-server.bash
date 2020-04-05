@@ -7,33 +7,78 @@
 if [ "$1" == "-h" ]; then echo "Usage: `basename $0` [Install LDAP Server. Script is invoked using the following command: ./install-ldap-server]" ; exit 0 ; fi
 #Yum installs required
 yum -y install openldap-servers openldap-clients >> ldap-server.log
-#Wget needed database files for ldap from a hosted apache server.
-wget -O /etc/openldap/db.ldif 10.2.7.10/db.ldif >> ldap-server.log
-wget -O /etc/openldap/base.ldif 10.2.7.10/base.ldif >> ldap-server.log
-#Set hashed password for Root
-hash=$(slappasswd -s CIT470 -n) >> ldap-server.log
-sed -i "s/olcRootPW:/olcRootPW: $hash/g" /etc/openldap/db.ldif >> ldap-server.log
+# Backing up the config file
+cp /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif.backup >> ldap-server.log
+#Configuring LDAP server
+sed -i '/olcSuffix: dc=my-domain,dc=com/c\olcSuffix: dc=cit470,dc=nku,dc=edu' /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif >> ldap-server.log
+sed -i '/olcRootDN: cn=Manager,dc=my-domain,dc=com/c\olcRootDN: cn=Manager,dc=cit470,dc=nku,dc=edu' /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif >> ldap-server.log
+#Configuring the root password for LDAP
+echo "olcRootPW: Lemontree2020" >> /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif
 #Enable slapd and start it
 systemctl enable slapd.service && systemctl start slapd >> ldap-server.log
+systemctl enable slapd
 #Set firewall rules
-firewall-cmd --zone=public --add-port=389/tcp --permanent >> ldap-server.log
-firewall-cmd --zone=public --add-port=636/tcp --permanent >> ldap-server.log
-firewall-cmd --reload >> ldap-server.log
+systemctl start firewalld.service
+firewall-cmd --zone=public --add-port=389/tcp --permanent
+firewall-cmd --zone=public --add-port=389/udp --permanent
+firewall-cmd --zone=public --add-service=ldap --permanent
+firewall-cmd --zone=public --add-port=636/tcp --permanent
+firewall-cmd --zone=public --add-port=636/udp --permanent
+firewall-cmd --reload
+#Deleting The Old LDAP Database
+	#rm -R /var/lib/ldap/*
+	#Creating DB_CONFIG file
+		cp /usr/share/openldap-servers/DB_CONFIG.example /var/lib/ldap/DB_CONFIG
+	chown -R ldap:ldap /var/lib/ldap
+	yum install nss_ldap -y >> logfile
+	#Installing the  migration tools
+		yum install migrationtools -y >> logfile
+		#Taking the backup of migration file
+		cp /usr/share/migrationtools/migrate_common.ph /usr/share/migrationtools/migrate_common.ph.backup
+		#Editing migrate_common.ph file
+	sed -i '/$DEFAULT_MAIL_DOMAIN = "padl.com";/c\$DEFAULT_MAIL_DOMAIN = "$HOSTNAME.hh.nku.edu";' /usr/share/migrationtools/migrate_common.ph >> logfile
+	sed -i '/$DEFAULT_BASE = "dc=padl,dc=com";/c\$DEFAULT_BASE = "dc=cit470,dc=nku,dc=edu";' /usr/share/migrationtools/migrate_common.ph >> logfile
+	#Create base.ldif file
+	wget https://github.com/rabbitstick/cir470/raw/master/base.ldif
+	cp base.ldif /etc/httpd
+	wget -P /usr/share/migrationtools http://localhost/base.ldif >> logfile
+	systemctl start slapd.service
+	systemctl restart slapd.service
+		
+		
 #Add required LDAP Schemas
-ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/core.ldif >> ldap-server.log
-ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/cosine.ldif >> ldap-server.log
-ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/nis.ldif >> ldap-server.log
-ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/inetorgperson.ldif >> ldap-server.log
-#Import the domains information to olcDatabase{2} using ldapmodify for no CRC errors
-ldapmodify -Q -Y EXTERNAL -H ldapi:/// -f /etc/openldap/db.ldif >> ldap-server.log
-ldapadd -x -w CIT470 -D cn=Manager,dc=cit470,dc=nku,dc=edu -H ldap:/// -f /etc/openldap/base.ldif >> ldap-server.log
+ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/core.ldif
+	ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/cosine.ldif
+	ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/nis.ldif
+	ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/openldap/schema/inetorgperson.ldif
 #Restart slapd.service to enfore the changes
-systemctl restart slapd >> ldap-server.log
-#Get diradm
-wget --directory-prefix=/usr/local/ http://www.hits.at/diradm/diradm-1.3.tar.gz >> ldap-server.log
-#Unzip diradm directory
-tar zxvf /usr/local/diradm-1.3.tar.gz -C /usr/local/ >> ldap-server.log
-#Create the diradm.conf file using printf
-printf "# Begin /etc/diradm.conf\n# LDAP specific options\n# ---------------------\nLDAPURI="ldap://10.2.7.10:389/"\nBINDDN="cn=Manager,dc=cit470,dc=nku,dc=edu"\n# Be extremely careful with read rights\n# of this file if you set this value!!!\n# BINDPASS="secret"\nUSERBASE="ou=People,dc=cit470,dc=nku,dc=edu"\nGROUPBASE="ou=Group,dc=cit470,dc=nku,dc=edu"\n# Options for user accounts\n# ---------------------------------\nUIDNUMBERMIN="1000"\nUIDNUMBERMAX="60000"\nUSERGROUPS="yes"\nHOMEBASE="/home"\nHOMEPERM="0750"/nSKEL="/etc/skel"\nDEFAULT_GIDNUMBER="100"\nDEFAULT_LOGINSHELL="/bin/bash"\nDEFAULT_SHADOWINACTIVE="7"\nDEFAULT_SHADOWEXPIRE="-1"\nSHADOWMIN="0"\nSHADOWMAX="99999"\nSHADOWWARNING="7"\nSHADOWFLAG="0"\n# Options for group accounts\n# ----------------------------------\nGIDNUMBERMIN="1000"\nGIDNUMBERMAX="60000"\n# End /etc/diradm.conf" >> diradm.conf
-#Move and overwrite  diradm.conf with the one created
-mv -f diradm.conf /usr/local/diradm-1.3/ >> ldap-server.log
+systemctl stop slapd.service
+	chown -R ldap:ldap /var/lib/ldap
+	#Migrate data
+	slapadd -v -l /usr/share/migrationtools/base.ldif 
+	cd /usr/share/migrationtools/
+	./migrate_passwd.pl /etc/passwd > passwd.ldif
+	slapadd -v -l passwd.ldif
+	./migrate_group.pl /etc/group > group.ldif
+	slapadd -v -l group.ldif
+	chown -R ldap.ldap /var/lib/ldap
+	systemctl start slapd
+	#UP UNTIL THIS POINT I WAS ABLE TO START EVERYTHING FINE, AND THE USERS APPEAR TO BE ADDED CORRECTLY
+	cd /usr/local/sbin
+	wget http://www.hits.at/diradm/diradm-1.3.tar.gz
+	tar zxvf diradm-1.3.tar.gz
+	sed -i '/BINDDN="cn=Admin,o=System"/c\BINDDN="cn=Manager,dc=cit470,dc=nku,dc=edu"' /usr/local/sbin/diradm-1.3/diradm.conf >> logfile
+	sed -i '/USERBASE="ou=Users,ou=Accounts,o=System"/c\USERBASE="ou=People,dc=cit470,dc=nku,dc=edu"' /usr/local/sbin/diradm-1.3/diradm.conf >> logfile
+	sed -i '/GROUPBASE="ou=Groups,ou=Accounts,o=System"/c\GROUPBASE="ou=Group,dc=cit470,dc=nku,dc=edu"' /usr/local/sbin/diradm-1.3/diradm.conf >> logfile
+	cp /usr/local/sbin/diradm-1.3/diradm.conf /etc/
+	#I might not need this line sed -i 'LDAPURI="ldap://localhost:389/"/c\LDAPURI="ldap://10.2.7.2:389/"' /usr/local/diradm-1.3/diradm.conf >> logfile
+	systemctl start slapd.service
+	#COnfigure ACL
+	echo "olcAccess: {0}to attrs=userPassword, by self write by anonymous auth by * none" >> /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif
+	echo "olcAccess: {1} to * by self write by * read" >> /etc/openldap/slapd.d/cn=config/olcDatabase={2}hdb.ldif
+	systemctl restart slapd.service
+	reboot
+
+
+
+
